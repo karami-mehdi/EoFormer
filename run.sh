@@ -25,7 +25,7 @@ python -m torch.distributed.run --nproc_per_node=2 main.py \
 --weight_decay $wd \
 --num_workers 8 \
 --batch_size 2 \
---n_epochs 300 \
+--n_epochs 50 \
 --warmup_epochs 50 \
 --val_every 10 \
 --save_folder "/output" \

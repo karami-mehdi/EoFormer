@@ -58,61 +58,37 @@ def evaluate(args, model, model_inferer, loss_fn, data_loader, device='cuda'):
     model.eval()
     with torch.no_grad():
         n_ctr = 0
-        n_ctr_et = 0
         n_loss = 0
-        n_dice_wt = 0
-        n_dice_tc = 0
-        n_dice_et = 0
-        n_hausdorff_wt = 0
-        n_hausdorff_tc = 0
-        n_hausdorff_et = 0
+        sum_dice_avg = 0.0
+        sum_miou = 0.0
+        sum_acc = 0.0
+        n_class = None
+        sum_dice = None
         for step, batch_data in enumerate(data_loader):
-            # if step == 1:
-            #     break
             images, labels = batch_data['image'], batch_data['label']
             images = images.to(device)
             labels = labels.to(device, dtype=torch.float32)
             with autocast(enabled=True):
                 probs = model_inferer(images)
-                loss = loss_fn(probs, labels) # 分类损失函数
+                loss = loss_fn(probs, labels)
             n_loss += loss.item()
-            
             probs_sigmoid = post_sigmoid(probs)
             pred_masks = (probs_sigmoid >= 0.5).to(device, dtype=torch.float32)
-        
-            # cal_mean_dice.reset()
-            # cal_hausdorff.reset()
-            # dce = cal_mean_dice(pred_masks, labels)
-            # haus = cal_hausdorff(pred_masks, labels)
-            # dice, dice_not_nans = cal_mean_dice.aggregate() # 去除掉结果为nan的项
-            # hausdorff, hausdorff_not_nans = cal_hausdorff.aggregate() # 去除掉结果为nan的项
-            
-            dice , hausdorff = calculate_metric(pred_masks, labels)
-            
-            n_dice_tc += dice[0].item()
-            n_dice_wt += dice[1].item()
-            n_dice_et += dice[2].item()
-
-            n_hausdorff_tc += hausdorff[0].item()
-            n_hausdorff_wt += hausdorff[1].item()
-            n_hausdorff_et += hausdorff[2].item()
-            
-            if hausdorff[2].item() > 1e-3:
-                n_ctr_et += 1
-            elif hausdorff[2].item() == 0.0 and dice[2].item() == 1.0:
-                n_ctr_et += 1
-            else:
-                n_ctr_et += 0
+            dpc, dice_avg, miou, acc = calculate_metric(pred_masks.cpu().numpy(), labels.cpu().numpy())
+            if n_class is None:
+                n_class = int(dpc.shape[0])
+                sum_dice = np.zeros(n_class, dtype=np.float64)
+            sum_dice += dpc.numpy()
+            sum_dice_avg += dice_avg.item()
+            sum_miou += miou.item()
+            sum_acc += acc.item()
             n_ctr += 1
-            
-            dice_wt = n_dice_wt/n_ctr
-            dice_tc = n_dice_tc/n_ctr
-            dice_et = n_dice_et/n_ctr_et
-            hausdorff_wt = n_hausdorff_wt/n_ctr
-            hausdorff_tc = n_hausdorff_tc/n_ctr
-            hausdorff_et = n_hausdorff_et/n_ctr_et
+        dice_per_class = (sum_dice / max(n_ctr, 1)).tolist()
+        dice_avg_mean = sum_dice_avg / max(n_ctr, 1)
+        miou_mean = sum_miou / max(n_ctr, 1)
+        acc_mean = sum_acc / max(n_ctr, 1)
 
-    return n_loss/n_ctr, (dice_wt + dice_tc + dice_et)/3, dice_wt, dice_tc, dice_et, (hausdorff_wt + hausdorff_tc + hausdorff_et)/3, hausdorff_wt, hausdorff_tc, hausdorff_et
+    return n_loss/max(n_ctr,1), dice_avg_mean, dice_per_class[0], dice_per_class[1], dice_per_class[2], dice_per_class[3], dice_per_class[4], miou_mean, acc_mean
 
 
 def test(model, model_inferer, data_loader, saver0, saver1, device='cuda'):
@@ -120,71 +96,48 @@ def test(model, model_inferer, data_loader, saver0, saver1, device='cuda'):
     model.eval()
     with torch.no_grad():
         n_ctr = 0
-        n_ctr_et = 0
-        n_dice_wt = 0
-        n_dice_tc = 0
-        n_dice_et = 0
-        n_hausdorff_wt = 0
-        n_hausdorff_tc = 0
-        n_hausdorff_et = 0
+        sum_dice_avg = 0.0
+        sum_miou = 0.0
+        sum_acc = 0.0
+        n_class = None
+        sum_dice = None
         for step, batch_data in enumerate(data_loader):
             images, labels = batch_data['image'], batch_data['label']
             images = images.to(device)
             labels = labels.to(device, dtype=torch.float32)
-            
             with autocast(enabled=True):
                 probs = model_inferer(images)
-            
             probs_sigmoid = post_sigmoid(probs)
             pred_masks = (probs_sigmoid >= 0.5).to(device, dtype=torch.float32)
-            
             label = labels[0, 1]
-            # label[np.where(labels[0, 1] == 1)] = 1
             label[np.where(labels[0, 0] == 1)] = 2
             label[np.where(labels[0, 2] == 1)] = 3
-
             seg_img = pred_masks[0, 1]
-            # seg_img[np.where(pred_masks[0, 1] == 1)] = 1
             seg_img[np.where(pred_masks[0, 0] == 1)] = 2
             seg_img[np.where(pred_masks[0, 2] == 1)] = 3
-            
             saver0(label)
             saver1(seg_img)
-            
-            dice , hausdorff = calculate_metric(pred_masks, labels)
-            
+            dpc, dice_avg, miou, acc = calculate_metric(pred_masks.cpu().numpy(), labels.cpu().numpy())
+            if n_class is None:
+                n_class = int(dpc.shape[0])
+                sum_dice = np.zeros(n_class, dtype=np.float64)
             print('dice:')
-            print('tc:', dice[0].item())
-            print('wt:', dice[1].item())
-            print('et:', dice[2].item())
-            print('hausdorff:')
-            print('tc:', hausdorff[0].item())
-            print('wt:', hausdorff[1].item())
-            print('et:', hausdorff[2].item())
-            
-            n_dice_tc += dice[0].item()
-            n_dice_wt += dice[1].item()
-            n_dice_et += dice[2].item()
-
-            n_hausdorff_tc += hausdorff[0].item()
-            n_hausdorff_wt += hausdorff[1].item()
-            n_hausdorff_et += hausdorff[2].item()
-            
-            if hausdorff[2].item() > 1e-3:
-                n_ctr_et += 1
-            elif hausdorff[2].item() == 0.0 and dice[2].item() == 1.0:
-                n_ctr_et += 1
-            else:
-                n_ctr_et += 0
+            print('bg:', dpc[0].item())
+            print('lc_wm:', dpc[1].item())
+            print('lc_c:', dpc[2].item())
+            print('rc_wm:', dpc[3].item())
+            print('rc_c:', dpc[4].item())
+            sum_dice += dpc.numpy()
+            sum_dice_avg += dice_avg.item()
+            sum_miou += miou.item()
+            sum_acc += acc.item()
             n_ctr += 1
-        
-        dice_wt = n_dice_wt/n_ctr
-        dice_tc = n_dice_tc/n_ctr
-        dice_et = n_dice_et/n_ctr_et
-        hausdorff_wt = n_hausdorff_wt/n_ctr
-        hausdorff_tc = n_hausdorff_tc/n_ctr
-        hausdorff_et = n_hausdorff_et/n_ctr_et
-    return (dice_wt + dice_tc + dice_et)/3, dice_wt, dice_tc, dice_et, (hausdorff_wt + hausdorff_tc + hausdorff_et)/3, hausdorff_wt, hausdorff_tc, hausdorff_et
+        dice_per_class = (sum_dice / max(n_ctr, 1)).tolist()
+        dice_avg_mean = sum_dice_avg / max(n_ctr, 1)
+        miou_mean = sum_miou / max(n_ctr, 1)
+        acc_mean = sum_acc / max(n_ctr, 1)
+
+    return dice_avg_mean, dice_per_class[0], dice_per_class[1], dice_per_class[2], dice_per_class[3], dice_per_class[4], miou_mean, acc_mean
 
 
 def inference(model, model_inferer, data_loader, saver, device='cuda'):

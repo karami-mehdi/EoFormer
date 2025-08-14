@@ -48,54 +48,6 @@ class SequentialDistributedSampler(torch.utils.data.sampler.Sampler):
  
     def __len__(self):
         return self.num_samples
-        
-
-def reduce_mean(tensor, nprocs):
-    rt = tensor.clone()
-    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
-    rt /= nprocs
-    return rt
-
-
-# def calculate_metric(y_pred=None, y=None, eps=1e-9):
-    
-#     if y.shape != y_pred.shape:
-#         raise ValueError(f"y_pred and y should have same shapes, got {y_pred.shape} and {y.shape}.")
-    
-#     batch_size, n_class = y_pred.shape[:2]
-    
-#     dsc = np.empty((batch_size, n_class))
-#     hd = np.empty((batch_size, n_class))
-#     cnt = np.zeros((n_class))
-#     for b, c in np.ndindex(batch_size, n_class):
-#         edges_pred, edges_gt = y_pred[b, c], y[b, c]
-#         if not np.any(edges_gt):
-#             warnings.warn(f"the ground truth of class {c} is all 0, this may result in nan distance.")
-#         if not np.any(edges_pred):
-#             warnings.warn(f"the prediction of class {c} is all 0, this may result in nan distance.")
-        
-#         if  (edges_pred.sum()>0 and edges_gt.sum()>0): # pred和gt均不为0，正常计算dice和hausdorff
-#             dice = binary.dc(edges_pred, edges_gt)
-#             distance = binary.hd95(edges_pred, edges_gt)
-#             dsc[b, c] = dice
-#             hd[b, c] = distance
-#             cnt[c] += 1
-#         elif  (edges_pred.sum()==0 and edges_pred.sum() == 0):  # pred和gt均为0，dice=1 hausdorff 0
-#             dsc[b, c] = 1
-#             hd[b, c] = 0
-#             cnt[c] += 1
-#         # elif  ( (edges_pred.sum()>0 and edges_gt.sum()==0) or (edges_pred.sum()==0 and edges_gt.sum()>0) ): # pred和gt中有一个为0，dice=0 hausdorff 373.128664
-#         else:
-#             dsc[b, c] = 0
-#             hd[b, c] = 0
-#             cnt[c] += 1
-#     dsc = np.sum(dsc, axis=0)
-#     hd = np.sum(hd, axis=0)
-#     dsc = dsc / cnt
-#     hd = hd / cnt
-    
-#     return torch.from_numpy(dsc), torch.from_numpy(hd)
-
 
 def calculate_metric(y_pred=None, y=None, eps=1e-6):
     
@@ -105,33 +57,38 @@ def calculate_metric(y_pred=None, y=None, eps=1e-6):
     batch_size, n_class = y_pred.shape[:2]
     
     dsc = np.empty((batch_size, n_class))
-    hd = np.empty((batch_size, n_class))
+    iou = np.empty((batch_size, n_class))
     cnt = np.zeros((n_class))
+    yp_lab = np.argmax(y_pred, axis=1)
+    yt_lab = np.argmax(y, axis=1)
+    acc = (yp_lab == yt_lab).sum() / (yp_lab.size + eps)
     for b, c in np.ndindex(batch_size, n_class):
         edges_pred, edges_gt = y_pred[b, c], y[b, c]
         if not np.any(edges_gt):
             warnings.warn(f"the ground truth of class {c} is all 0, this may result in nan distance.")
         if not np.any(edges_pred):
             warnings.warn(f"the prediction of class {c} is all 0, this may result in nan distance.")
-        
-        if  (edges_pred.sum()>0 and edges_gt.sum()>0): # pred和gt均不为0，正常计算dice和hausdorff
-            dice = binary.dc(edges_pred, edges_gt)
-            distance = binary.hd95(edges_pred, edges_gt)
-            dsc[b, c] = dice
-            hd[b, c] = distance
+        p = edges_pred > 0.5
+        g = edges_gt > 0.5
+        sp = p.sum()
+        sg = g.sum()
+        if (sp > 0 and sg > 0):
+            inter = np.logical_and(p, g).sum()
+            dsc[b, c] = (2.0 * inter + eps) / (sp + sg + eps)
+            uni = sp + sg - inter
+            iou[b, c] = (inter + eps) / (uni + eps)
             cnt[c] += 1
-        elif  (edges_pred.sum()==0 and edges_pred.sum() == 0):  # pred和gt均为0，dice=1 hausdorff 0
+        elif (sp == 0 and sg == 0):
             dsc[b, c] = 1
-            hd[b, c] = 0
+            iou[b, c] = 1
             cnt[c] += 1
-        # elif  ( (edges_pred.sum()>0 and edges_gt.sum()==0) or (edges_pred.sum()==0 and edges_gt.sum()>0) ): # pred和gt中有一个为0，dice=0 hausdorff 373.128664
         else:
             dsc[b, c] = 0
-            hd[b, c] = 0
+            iou[b, c] = 0
             cnt[c] += eps
-    dsc = np.sum(dsc, axis=0)
-    hd = np.sum(hd, axis=0)
-    dsc = dsc / cnt
-    hd = hd / cnt
+    dsc = np.sum(dsc, axis=0) / cnt
+    iou = np.sum(iou, axis=0) / cnt
+    dice_avg = np.mean(dsc)
+    miou = np.mean(iou)
     
-    return torch.from_numpy(dsc), torch.from_numpy(hd)
+    return torch.from_numpy(dsc), torch.tensor(dice_avg), torch.tensor(miou), torch.tensor(acc)
